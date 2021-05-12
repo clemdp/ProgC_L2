@@ -1,0 +1,205 @@
+#!/bin/bash
+
+# Correcteur automatique de TME
+# version 0.2
+# 10/2011
+# S. Doncieux
+
+#set -x
+
+
+
+if [ $# -lt 2 ]
+then
+    echo "Usage: $0 num repertoire"
+    echo "num est le numero du TME a corriger."
+    echo "repertoire est le repertoire du TME a corriger."
+    exit 1
+fi
+
+
+NUMTME=$1
+MYPWD=$PWD
+TMEDIR=$PWD/$2
+CMD=$0
+
+CORRECTIONDIR=/Infos/lmd/2017/licence/ue/2I001-2017oct//CANVAS/${NUMTME}
+CORRECTION=${CORRECTIONDIR}/${NUMTME}.canvas
+FOURNIDIR=/Infos/lmd/2017/licence/ue/2I001-2017oct//fournis/S${NUMTME}
+UTILDIR=/Infos/lmd/2017/licence/ue/2I001-2017oct//util
+TMEDIRCAVE=/Infos/lmd/2017/licence/ue/2I001-2017oct//CPTR
+
+
+NUM=0
+#########################
+# Quelques fonctions pour faciliter l'écriture des canvas
+
+function evaluer_make {
+TARGET=$1
+NOTE=$2
+#echo "evaluer_make: $TARGET note sur $NOTE"
+#set -x
+#env
+make $TARGET >"make_$TARGET.log" 2>&1 && { echo "Construction cible $TARGET: OK" ; echo "Note $NOTE/$NOTE"; } || { echo "Construction cible $TARGET: erreur" ; echo "[[[["; cat "make_$TARGET.log"; echo "]]]]"; echo "Note 0/$NOTE";}
+
+}
+
+export -f evaluer_make
+
+function evaluer_file {
+echo "Evaluer files $*"
+FILES=$*
+
+COUNT=0
+COUNTTOTAL=0
+for FILE in $FILES
+do
+  if [ -e $FILE ]
+      then
+        echo "Fichier $FILE trouve."
+        COUNT=$[ $COUNT + 1 ]
+  else
+    echo "File $FILE non trouve"
+    
+  fi
+  COUNTTOTAL=$[ $COUNTTOTAL + 1 ]
+done
+echo "Note $COUNT/$COUNTTOTAL"
+}
+
+export -f evaluer_file
+
+function evaluer_exec {
+EXECFILE=$1
+NOTE=$2
+#echo "evaluer_exec: $EXECFILE note sur $NOTE (pwd=$PWD)"
+#set -x
+#env
+if [ -e ./$EXECFILE ]
+then
+	export NOTE
+	./$EXECFILE 2>&1 | perl -ne '{if (/Note/) { my @tmp=split(/ /, $_); my @tmp2=split(/\//,$tmp[1]); print "Note ".$tmp2[0]/$tmp2[1]*$ENV{NOTE}."/".$ENV{NOTE}."\n"; }  else  { print $_;}}' | tee $EXECFILE.log
+	#echo NOTE = $NOTE
+	if  [ $(grep Note $EXECFILE.log | grep "/$NOTE" | wc -l) -lt 1 ]
+	then
+	    echo "Error: la note doit etre du type X/$NOTE"
+	    echo "       il y a une erreur dans la correction automatique de de TME"
+	fi
+else 
+    echo "Echec $EXECFILE" 
+    echo "Note 0/$NOTE"; 
+fi
+
+}
+
+export -f evaluer_exec
+
+#########################
+# Fonctions internes
+
+function correct_question {
+    NUMQ=$1
+    echo '================='
+    echo "Correction de la question $NUMQ" 
+    cat $CORRECTION | grep -v "^#" | perl -ne '{ if (/\@Question '$NUMQ'/) {$printOK=1;} elsif (/\@Question/) {$printOK=0;} elsif ($printOK == 1 ) {print $_;} }'  | bash
+    echo '================='
+}
+
+
+function get_questions {
+    CORRECTION=$1
+    grep "^@Question" $CORRECTION | sed 's/@Question//'
+}
+
+function grade_TME {
+
+    EVALUATION=$1
+    TMECOPYDIR=$MYPWD/correct.TME$NUMTME.$NUM.$$
+    
+    rm -rf $TMECOPYDIR 2>/dev/null
+    mkdir $TMECOPYDIR || {
+	echo "Impossible de creer le repertoire $TMECOPYDIR"
+	exit 1
+    }
+    
+
+    cp $FOURNIDIR/S$NUMTME/* $TMECOPYDIR 2>/dev/null
+
+    cp  $CORRECTIONDIR/* $TMECOPYDIR
+    
+    cd $TMECOPYDIR
+    for a in $(find $TMEDIR -iname \*.h) $(find $TMEDIR -iname \*.c)
+    do
+	cp $a .
+    done
+
+    mv Makefile Makefile.tmp
+    
+    cat >Makefile <<EOF 
+CHECKINCLUDEDIR=$UTILDIR/include
+CHECKLIB=$UTILDIR/lib/$(if [ $(uname -a | grep -i darwin | wc -l) -eq 1 ] ; then echo libcheck.dylib;  else  echo libcheck.a ; fi)
+EOF
+
+    cat Makefile.tmp >> Makefile
+    
+    
+    for question in $(get_questions $CORRECTION)
+    do
+	correct_question $question | tee -a $EVALUATION
+    done
+    echo "*********************" | tee -a $EVALUATION
+    cat $EVALUATION | grep -i -e "Note" -e "mort" | perl -ne '{ if (/mort/) { $mortsubite=1; } ($garbage, $n)=split(/ /); ($note1, $note2) = split(/\//,$n); if ($mortsubite != 1) {$note+=$note1;} $notetotal+=$note2; print "Note finale: ".$note."/".$notetotal."\n";}'  | tail -n 1 | tee -a $EVALUATION
+    cat $EVALUATION | grep -i -e "Note" -e "mort" | perl -ne '{ if (/mort/) { $mortsubite=1; } ($garbage, $n)=split(/ /); ($note1, $note2) = split(/\//,$n); if ($mortsubite != 1) {$note+=$note1;} $notetotal+=$note2; $nn=$note/$notetotal*20 ; print "Note finale /20: ".$nn."/20\n";}'  | tail -n 1 | sed 's%\(\...\).*/%\1/%' | tee -a $EVALUATION
+    echo "*********************" | tee -a $EVALUATION
+    cd - 2>/dev/null >/dev/null
+
+    rm -rf $TMECOPYDIR 2>/dev/null
+#    echo "Pour verifier la note, voir sources dans $TMECOPYDIR"
+#    echo "Evaluation dans $EVALUATION"
+}
+
+#########################
+## Coeur du script
+
+ulimit -t 10
+
+if [ ! -e $CORRECTION ]
+then
+    echo "Il n'y a pas de correction automatique pour ce TME."
+    exit
+fi
+
+if [ -e $TMEDIR ]
+then
+    echo "Evaluation d'un répertoire seul"
+    grade_TME $MYPWD/evaluation_$(echo $2 | sed 's%/%_%g')_$$.log 
+else
+    # cas de la correction des copies d'un groupe
+    echo "Evaluation d'un groupe d'étudiants"
+    cd $TMEDIRCAVE/gr$2
+    LOGEVAL=$MYPWD/evaluations_TME${NUMTME}_$$
+    rm -rf $LOGEVAL 2>/dev/null
+    for dir in *_$NUMTME.tgz
+    do
+	echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+	echo "+++++++ Correction de $(basename $dir .tgz) ++++++++++"
+	TMPEVALDIR=$(basename $dir .tgz).tmp
+	rm -rf $TMPEVALDIR 2>/dev/null
+	mkdir $TMPEVALDIR
+	cd $TMPEVALDIR
+	tar zxvf ../$dir >/dev/null 2>&1 
+	TMEDIR=$PWD
+	grade_TME $MYPWD/evaluation_TME${NUMTME}_$(basename $dir .tgz)_$$.log
+	echo -n "$(basename $dir .tgz) " >> $LOGEVAL 
+	echo -n $(grep "Note finale: " $MYPWD/evaluation_TME${NUMTME}_$(basename $dir .tgz)_$$.log | gawk '{print $3;}')" "  >> $LOGEVAL
+	echo $(grep "Note finale /20: " $MYPWD/evaluation_TME${NUMTME}_$(basename $dir .tgz)_$$.log | gawk '{print $4;}')" "  >> $LOGEVAL
+	NUM=$[ $NUM + 1 ]
+	cd ..
+	rm -rf $TMPEVALDIR
+    done
+    echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+    echo "+++++++++++++++++++++++ SUMMARY ++++++++++++++++++++++"
+    echo "++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+    cat $LOGEVAL  
+    cd $MYPWD
+fi
